@@ -89,6 +89,8 @@ html,body{height:100%;background:var(--bg);color:var(--t1);font-family:var(--fon
 .set-done-btn:active{opacity:.8}
 .set-done-btn.done{background:var(--green-bg);color:var(--green);border:1.5px solid #7ec89a}
 .set-done-btn.done::before{content:'✓ '}
+.edit-back-btn{margin-left:auto;height:40px;padding:0 12px;border-radius:var(--r);border:1.5px solid var(--b2);background:var(--bg2);color:var(--t2);font-size:12px;font-family:var(--font);cursor:pointer;flex-shrink:0}
+.edit-back-btn:active{background:var(--bg3)}
 .add-set-btn{background:none;border:1.5px dashed var(--b2);border-radius:var(--r);padding:8px 16px;color:var(--t2);font-size:13px;font-family:var(--font);cursor:pointer;width:100%;margin-top:4px}
 .alt-toggle{display:flex;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--b1);margin-top:10px;cursor:pointer}
 .alt-toggle label{font-size:13px;color:var(--t2);cursor:pointer;flex:1}
@@ -324,7 +326,8 @@ let S = {
   exData:{}, sessionNote:'',
   logDay:null
 };
-let timer = { active:false, paused:false, remaining:0, intervalId:null, exName:'', setNum:0, restSecs:0 };
+const TIMER_KEY = 'timerState_kazuto';
+let timer = { active:false, paused:false, endTime:null, remaining:0, intervalId:null, exName:'', setNum:0, exerciseId:'', setIndex:-1 };
 
 // ── Utils ───────────────────────────────────────────────────
 function todayStr() {
@@ -341,11 +344,10 @@ function fmtSecs(s) {
   return `${m}:${String(sec).padStart(2,'0')}`;
 }
 function round25(v) { return Math.round(v/2.5)*2.5; }
-function isBadCond() { return S.cond.f >= 4 || S.cond.s <= 2; }
+function isBadCond() { return S.cond.f >= 4 || S.cond.s >= 4 || S.cond.so >= 4; }
 function condHint() {
   if(!isBadCond()) return '';
-  const extra = S.cond.f >= 4 ? 60 : 30;
-  return `💡 コンディション注意 — 休憩を+${extra}秒延ばすことを検討`;
+  return 'コンディション注意：今日は休憩を長めに。重量を少し落としてもOK';
 }
 function filteredEx() {
   const all = EX[S.day];
@@ -541,13 +543,13 @@ function renderToday() {
     `<button class="sel-btn${S.time===t?' active':''}" onclick="setTime(${t})">${t}分</button>`
   ).join('');
   const condDefs = [
-    {key:'f', lbl:'疲労',   lo:'低い',hi:'高い'},
-    {key:'s', lbl:'睡眠',   lo:'悪い',hi:'良い'},
-    {key:'so',lbl:'筋肉痛', lo:'なし', hi:'強い'}
+    {key:'f', lbl:'疲労',   lo:'疲れ少', hi:'疲れ多'},
+    {key:'s', lbl:'睡眠',   lo:'充分',   hi:'睡眠不足'},
+    {key:'so',lbl:'筋肉痛', lo:'なし',   hi:'あり'}
   ];
   const condRows = condDefs.map(c => {
     const v = S.cond[c.key];
-    const cls = (c.key==='s' ? v<=2 : v>=4) ? 'bad' : (c.key==='s' ? v>=4 : v<=2) ? 'good' : '';
+    const cls = v >= 4 ? 'bad' : v <= 2 ? 'good' : '';
     return `<div class="cond-row">
       <span class="cond-lbl">${c.lbl}</span>
       <span class="cond-hint">${c.lo}</span>
@@ -612,7 +614,7 @@ function renderExCard(ex) {
         <span class="set-num">Set${i+1}</span>
         <span style="font-size:16px;font-weight:700;color:var(--green)">${set.reps} 回</span>
         <span style="font-size:13px;color:var(--t3);margin-left:4px">${d.todayW?d.todayW+'kg':''}</span>
-        <button class="set-done-btn done" style="pointer-events:none">完了</button>
+        <button class="edit-back-btn" onclick="uncompleteSet('${ex.id}',${i})">編集に戻す</button>
       </div>`;
     }
     return `<div class="set-row">
@@ -736,7 +738,7 @@ function completeSet(exId,idx,restSecs) {
   if(!S.startTime){const now=new Date();S.startTime=`${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;}
   schedSave();
   const ex=EX[S.day].find(e=>e.id===exId);
-  startTimer(restSecs,(ex?ex.name:''),idx+1);
+  startTimer(restSecs,exId,idx,(ex?ex.name:''),idx+1);
   renderToday();
 }
 function addSet(id) { const d=S.exData[id]; if(d){d.sets.push({reps:'',done:false});renderToday();} }
@@ -755,18 +757,21 @@ function onSaveSession() {
 let saveTimer=null;
 function schedSave(){clearTimeout(saveTimer);saveTimer=setTimeout(saveSession,800);}
 
-// ── Timer ────────────────────────────────────────────────────
-function startTimer(secs,exName,setNum) {
+// ── Timer (実時間ベース: endTime から残り秒を計算) ──────────────
+function startTimer(secs,exerciseId,setIndex,exName,setNum) {
   clearInterval(timer.intervalId);
-  timer={active:true,paused:false,remaining:secs,restSecs:secs,exName,setNum,intervalId:null};
+  timer={active:true,paused:false,endTime:Date.now()+secs*1000,remaining:secs,
+    intervalId:null,exName,setNum,exerciseId,setIndex};
+  saveTimerState();
   updateTimerUI();
   document.getElementById('timer-bar').classList.add('show');
-  timer.intervalId=setInterval(tick,1000);
+  timer.intervalId=setInterval(tick,500);
 }
 function tick() {
-  if(timer.paused) return;
-  timer.remaining--;
-  if(timer.remaining<=0){timerDone();}else{updateTimerUI();}
+  if(!timer.active||timer.paused) return;
+  const rem=Math.max(0,Math.round((timer.endTime-Date.now())/1000));
+  timer.remaining=rem;
+  if(rem<=0){timerDone();}else{updateTimerUI();}
 }
 function updateTimerUI() {
   const num=document.getElementById('timer-num');
@@ -786,16 +791,78 @@ function timerDone() {
   if(num){num.textContent='▶ 次のセットへ';num.className='done-state';}
   if('vibrate' in navigator) navigator.vibrate([200,100,200]);
   timer.active=false;
+  lsDel(TIMER_KEY);
 }
-function pauseTimer(){timer.paused=!timer.paused;updateTimerUI();}
-function addTime(s){
-  timer.remaining+=s;
-  if(!timer.active){timer.active=true;clearInterval(timer.intervalId);timer.intervalId=setInterval(tick,1000);}
+function pauseTimer() {
+  if(!timer.active) return;
+  if(timer.paused){timer.endTime=Date.now()+timer.remaining*1000;timer.paused=false;}
+  else{timer.remaining=Math.max(0,Math.round((timer.endTime-Date.now())/1000));timer.paused=true;}
+  saveTimerState();
   updateTimerUI();
 }
-function skipTimer(){
-  clearInterval(timer.intervalId);timer.active=false;timer.remaining=0;
+function addTime(s) {
+  if(!timer.active){startTimer(s,timer.exerciseId||'',timer.setIndex??-1,timer.exName||'',timer.setNum||0);return;}
+  if(timer.paused){timer.remaining+=s;}
+  else{timer.endTime+=s*1000;timer.remaining=Math.max(0,Math.round((timer.endTime-Date.now())/1000));}
+  saveTimerState();
+  updateTimerUI();
+}
+function skipTimer() {
+  clearInterval(timer.intervalId);
+  timer.active=false;timer.remaining=0;timer.endTime=null;
+  lsDel(TIMER_KEY);
   document.getElementById('timer-bar').classList.remove('show');
+}
+function saveTimerState() {
+  if(timer.active){
+    lsSet(TIMER_KEY,{active:true,paused:timer.paused,endTime:timer.endTime,
+      remaining:timer.remaining,exName:timer.exName,setNum:timer.setNum,
+      exerciseId:timer.exerciseId,setIndex:timer.setIndex});
+  }else{lsDel(TIMER_KEY);}
+}
+function loadTimerState() {
+  const saved=lsGet(TIMER_KEY);
+  if(!saved||!saved.active) return;
+  const now=Date.now();
+  if(!saved.paused){
+    const rem=Math.max(0,Math.round((saved.endTime-now)/1000));
+    if(rem<=0){
+      lsDel(TIMER_KEY);
+      document.getElementById('timer-bar').classList.add('show');
+      const n=document.getElementById('timer-num');
+      if(n){n.textContent='▶ 次のセットへ';n.className='done-state';}
+      const l=document.getElementById('timer-label');
+      if(l) l.textContent=`${saved.exName||''} — Set${saved.setNum||''} 完了 | 休憩終了`;
+      return;
+    }
+    timer.active=true;timer.paused=false;timer.endTime=saved.endTime;timer.remaining=rem;
+    timer.exName=saved.exName;timer.setNum=saved.setNum;
+    timer.exerciseId=saved.exerciseId||'';timer.setIndex=saved.setIndex??-1;
+    document.getElementById('timer-bar').classList.add('show');
+    updateTimerUI();timer.intervalId=setInterval(tick,500);
+  }else{
+    timer.active=true;timer.paused=true;timer.remaining=saved.remaining;
+    timer.endTime=now+saved.remaining*1000;
+    timer.exName=saved.exName;timer.setNum=saved.setNum;
+    timer.exerciseId=saved.exerciseId||'';timer.setIndex=saved.setIndex??-1;
+    document.getElementById('timer-bar').classList.add('show');
+    updateTimerUI();timer.intervalId=setInterval(tick,500);
+  }
+}
+// バックグラウンド復帰時に残り時間を補正
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible'||!timer.active||timer.paused) return;
+  const rem=Math.max(0,Math.round((timer.endTime-Date.now())/1000));
+  if(rem<=0){timerDone();}else{timer.remaining=rem;updateTimerUI();}
+});
+// ── 編集に戻す ──
+function uncompleteSet(exId,idx) {
+  const d=S.exData[exId];
+  if(!d||!d.sets[idx]) return;
+  d.sets[idx].done=false;
+  if(timer.active&&timer.exerciseId===exId&&timer.setIndex===idx){skipTimer();}
+  schedSave();
+  renderToday();
 }
 
 // ── Log tab ──────────────────────────────────────────────────
@@ -1054,6 +1121,7 @@ function init() {
   loadTodaySession();
   initExData();
   renderToday();
+  loadTimerState();
 }
 init();
 </script>
