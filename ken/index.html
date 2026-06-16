@@ -182,6 +182,10 @@ html,body{height:100%;background:var(--bg);color:var(--t1);font-family:var(--fon
 .data-btn{flex:1;min-width:120px;height:44px;border-radius:var(--r);border:1.5px solid var(--b2);background:var(--bg2);color:var(--t1);font-size:13px;font-weight:600;font-family:var(--font);cursor:pointer}
 .data-btn.danger{background:var(--red-bg);color:var(--red);border-color:#d04040}
 .data-btn:active{opacity:.8}
+.copy-export{display:none;margin-top:12px;padding:12px;border-radius:var(--r);background:var(--amber-bg);border:1px solid #e8a000}
+.copy-export.show{display:block}
+.copy-export p{font-size:13px;color:var(--amber-t);margin-bottom:8px;line-height:1.6}
+.copy-export textarea{width:100%;min-height:220px;border:1.5px solid var(--b2);border-radius:var(--r);padding:10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--card);color:var(--t1);resize:vertical}
 .section-title{font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;margin-top:16px}
 .section-title:first-child{margin-top:0}
 hr.sep{border:none;border-top:1px solid var(--b1);margin:12px 0}
@@ -973,6 +977,11 @@ function renderLog() {
         <button class="data-btn" onclick="document.getElementById('importFile').click()">📥 JSONインポート</button>
         <button class="data-btn danger" onclick="confirmClear()">🗑 全データ削除</button>
       </div>
+      <div id="copyExportBox" class="copy-export">
+        <p>ファイルのダウンロードができない場合は、下の内容をコピーして送ってください。ブラウザを変えると記録が引き継がれない場合があります。</p>
+        <button class="data-btn" type="button" onclick="copyExportText()">コピーする</button>
+        <textarea id="copyExportText" readonly></textarea>
+      </div>
       <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJSON(this)" />
     </div>`;
 }
@@ -1016,11 +1025,45 @@ function exportJSON() {
     const k=localStorage.key(i);
     if(k&&k.includes('kenchan')){try{all[k]=JSON.parse(localStorage.getItem(k));}catch(e){}}
   }
-  const blob=new Blob([JSON.stringify(all,null,2)],{type:'application/json'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='kenchan_training_log.json';
-  a.click();
+  const jsonText=JSON.stringify(all,null,2);
+  try{
+    const blob=new Blob([jsonText],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download='kenchan_training_log.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setTimeout(()=>showCopyExport(jsonText),500);
+  }catch(e){
+    showCopyExport(jsonText);
+  }
+}
+function showCopyExport(jsonText) {
+  const box=document.getElementById('copyExportBox');
+  const textarea=document.getElementById('copyExportText');
+  if(!box||!textarea){
+    alert('コピー用データを表示できませんでした。ログ画面を開き直して再度お試しください。');
+    return;
+  }
+  textarea.value=jsonText;
+  box.classList.add('show');
+  textarea.focus();
+  textarea.select();
+}
+async function copyExportText() {
+  const textarea=document.getElementById('copyExportText');
+  if(!textarea) return;
+  try{
+    await navigator.clipboard.writeText(textarea.value);
+    alert('コピーしました。LINEなどに貼り付けて送ってください。');
+  }catch(e){
+    textarea.focus();
+    textarea.select();
+    alert('コピーできない場合は、下のテキストを長押ししてコピーしてください。');
+  }
 }
 function importJSON(input) {
   const file=input.files[0];
